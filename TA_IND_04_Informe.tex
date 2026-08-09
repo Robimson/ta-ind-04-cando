@@ -1,0 +1,373 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[spanish,es-noquoting]{babel}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{siunitx}
+\usepackage{hyperref}
+\usepackage[
+  backend=biber,
+  style=ieee,
+  sorting=none
+]{biblatex}
+\addbibresource{references.bib}
+
+\title{%
+  TA-IND-04 --- Análisis de Rendimiento Paralelo aplicado al PFC\\
+  \large Transformación de foco individual: T1 (Filtrado y selección)
+}
+\author{Robinson Rodrigo Cando Moreno}
+\date{8 de agosto de 2026}
+
+\begin{document}
+\maketitle
+
+\noindent
+\textbf{Universidad:} Universidad Técnica Estatal de Quevedo \\
+\textbf{Facultad:} Ciencias de la Computación --- \textbf{Carrera:} Ingeniería de Software \\
+\textbf{Asignatura:} Aplicaciones Distribuidas (ISR-701) --- \textbf{Unidad 4} \\
+\textbf{Equipo de PE-U4:} Cristhian Daniel Pacheco Cárdenas, Robinson Rodrigo Cando Moreno, Ernesto Gregory Luna Mora \\
+\textbf{PFC de referencia:} ACC --- Sistema de Gestión de Soporte Técnico ISP \\
+\textbf{Transformación declarada como foco individual:} T1 --- Filtrado y selección
+
+\section{Introducción y contexto}
+
+Este informe analiza de forma individual los resultados experimentales de la práctica
+GA-SUM-05/PE-U4, en la que el equipo comparó cinco transformaciones (T1--T5) sobre un
+dataset sintético de 600\,000 tickets de soporte técnico ISP, implementadas en
+\texttt{pandas} y en \texttt{PySpark 3.5.3}, con un protocolo de un calentamiento
+más cinco repeticiones cronometradas (mediana como estadístico). El objetivo de este
+documento no es repetir esas mediciones, sino someterlas a un análisis cuantitativo
+propio frente al modelo de Amdahl~\cite{amdahl1967} --- y, donde corresponda, frente
+a su reformulación en términos de carga escalada de Gustafson~\cite{gustafson1988} ---
+y a la métrica de Karp-Flatt~\cite{karpflatt1990}, y decidir, con ese diagnóstico, cómo integrar
+procesamiento distribuido en el PFC de referencia (ACC --- Sistema de Gestión de
+Soporte Técnico ISP).
+
+\textbf{Origen de los datos.} Los datos base del equipo provienen del repositorio
+\url{https://github.com/CristhianP03/pe-u4-spark-equipoA}, commit
+\texttt{19e84a0072f1fe49a53d1e5b71b17ba8d83091b3} (archivo
+\texttt{resultados/tiempos\_resumen.csv}). Ese commit escala únicamente T3 en
+$N=1,2,4$; para el resto de transformaciones solo mide $N=4$. Como mi foco
+individual es \textbf{T1}, que no estaba escalado, reproduje el pipeline completo
+del equipo (mismo script \texttt{medicion.py}, mismo protocolo) en una sesión propia
+de Google Colab el 8 de agosto de 2026, y además ejecuté mediciones adicionales de
+T1 en $N=1$ y $N=2$ (que el script del equipo no contempla por defecto). Todos los
+valores de este informe --- T1 a T5 --- provienen por lo tanto de esa única sesión
+de reproducción, internamente consistente entre sí, y se incluyen en
+\texttt{datos/tiempos\_base.csv} de este repositorio. Esta decisión se declara aquí
+de forma explícita para no mezclar cifras de sesiones de medición distintas.
+
+\section{Análisis propio de los resultados de \textit{speedup}}
+
+\subsection{Tabla de datos base}
+
+La tabla~\ref{tab:base} resume las medianas de cinco repeticiones para las cinco
+transformaciones (pandas y Spark con $N=4$), y el escalado propio de T1 en
+$N=1,2,4$.
+
+\begin{table}[h]
+  \centering
+  \caption{Tiempos medianos (5 repeticiones) y \textit{speedup} vs.\ pandas, $N=4$.}
+  \label{tab:base}
+  \begin{tabular}{lS[table-format=2.3]S[table-format=2.3]S[table-format=1.3]S[table-format=1.3]}
+    \toprule
+    Transformación & {$T_{\text{pandas}}$ (\si{\second})} & {$T_{\text{spark}}$ (\si{\second})} & {$S$} & {$E$ ($N=4$)} \\
+    \midrule
+    T1 --- Filtrado y selección (foco)      & 8.352  & 5.777 & 1.446 & 0.361 \\
+    T2 --- Agrupación y agregación          & 6.705  & 3.576 & 1.875 & 0.469 \\
+    T3 --- \textit{Join} de dos DataFrames  & 8.895  & 7.055 & 1.261 & 0.315 \\
+    T4 --- Columna derivada compleja        & 12.264 & 7.069 & 1.735 & 0.434 \\
+    T5 --- Ordenamiento y \textit{top-N}    & 6.813  & 2.372 & 2.872 & 0.718 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[h]
+  \centering
+  \caption{Escalado propio de T1 (foco) en Spark, $N=1,2,4$. Base pandas: \SI{8.352}{\second}.}
+  \label{tab:t1scale}
+  \begin{tabular}{lS[table-format=1.3]S[table-format=1.3]S[table-format=1.3]S[table-format=1.3]}
+    \toprule
+    $N$ & {$T_{\text{spark}}(N)$ (\si{\second})} & {$S_{\text{vs.\ pandas}}(N)$} & {$S_{\text{interno}}(N)$} & {$E(N)$} \\
+    \midrule
+    1 & 5.285 & 1.580 & 1.000 & 1.000 \\
+    2 & 5.012 & 1.666 & 1.054 & 0.527 \\
+    4 & 5.777 & 1.446 & 0.915 & 0.229 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Aquí $S_{\text{interno}}(N) = t_{\text{spark}}(N{=}1)/t_{\text{spark}}(N)$ es el
+escalado \emph{interno} del motor (Ec.~\ref{eq:amdahl}), el que corresponde
+comparar con la curva de Amdahl, mientras que $S_{\text{vs.\ pandas}}$ es la
+aceleración global frente a la línea base secuencial.
+
+\subsection{Ley de Amdahl y eficiencia}
+
+Con $p$ la fracción paralelizable del programa y $N$ el número de unidades de
+procesamiento, la Ley de Amdahl~\cite{amdahl1967} predice:
+\begin{equation}
+  S(N) = \frac{1}{(1-p) + \dfrac{p}{N}}, \qquad
+  S_{\max} = \lim_{N \to \infty} S(N) = \frac{1}{1-p}.
+  \label{eq:amdahl}
+\end{equation}
+La eficiencia del paralelismo se define como
+\begin{equation}
+  E(N) = \frac{S(N)}{N}.
+  \label{eq:eficiencia}
+\end{equation}
+
+\subsection{Contraste con la predicción teórica}
+
+La tabla~\ref{tab:t1scale} muestra un patrón \textbf{no monótono}: el
+\textit{speedup} interno de T1 \emph{mejora} de $N=1$ a $N=2$ ($S_{\text{interno}}$
+de 1.000 a 1.054), pero \emph{empeora} en $N=4$, cayendo a $0.915$ --- es decir,
+con 4 executors T1 corre más lento que con uno solo. La
+figura~\ref{fig:speedup} lo muestra gráficamente.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.75\textwidth]{../figuras/fig_speedup.png}
+  \caption{\textit{Speedup} interno experimental de T1 frente a la curva de Amdahl.
+    El ajuste de Karp-Flatt entre $N=2$ y $N=4$ produce $p<0$, fuera del dominio
+    válido del modelo, por lo que no se traza una curva teórica.}
+  \label{fig:speedup}
+\end{figure}
+
+\textbf{¿Coinciden los resultados con la predicción de Amdahl? No, y de una forma
+más severa que una simple desviación por defecto.} La Ley de Amdahl asume
+sobrecarga nula: bajo esa hipótesis, añadir procesadores \emph{nunca} puede hacer
+que un programa corra más lento, de modo que el límite inferior teórico es
+$S(N) \geq 1$ para toda $N \geq 1$ (el caso $p=0$, totalmente serial). El valor
+observado $S_{\text{interno}}(4) = 0.915$ está \emph{por debajo de ese piso
+teórico}, lo cual el modelo de Amdahl no puede representar bajo ninguna
+combinación de $p \in [0,1]$ --- es matemáticamente imposible en el modelo ideal.
+Tomando como referencia más cercana el caso límite $p=0$ ($S_{\text{teo}}=1$), la
+desviación relativa es
+\begin{equation}
+  \Delta = \frac{S_{\text{med}} - S_{\text{teo}}}{S_{\text{teo}}}
+         = \frac{0.915 - 1}{1} = -8.5 \; \si{\percent}.
+  \label{eq:delta}
+\end{equation}
+Como explica la literatura sobre los límites prácticos de la ley en arquitecturas
+reales~\cite{hillmarty2008}, esto ocurre precisamente porque Amdahl no modela la
+sobrecarga de coordinación: cuando el trabajo por transformar es pequeño (T1 es un
+filtro de una sola pasada, sin \textit{shuffle}), el costo fijo de orquestar más
+executors (planificación de tareas, más particiones, comunicación
+\textit{driver}--\textit{executor}) puede superar cualquier beneficio de
+paralelizar. La sección~\ref{sec:diagnostico} cuantifica esta sobrecarga con
+Karp-Flatt y la atribuye a mecanismos concretos.
+
+\section{Diagnóstico de la fracción no escalable}
+\label{sec:diagnostico}
+
+La métrica de Karp-Flatt~\cite{karpflatt1990} estima experimentalmente la fracción
+serial $e$ a partir del \textit{speedup} observado con $N$ unidades:
+\begin{equation}
+  e = \frac{\dfrac{1}{S} - \dfrac{1}{N}}{1 - \dfrac{1}{N}}, \qquad N > 1.
+  \label{eq:karpflatt}
+\end{equation}
+
+Sustituyendo los valores de la tabla~\ref{tab:t1scale}:
+\[
+  e(N{=}2) = \frac{\frac{1}{1.054} - \frac{1}{2}}{1 - \frac{1}{2}}
+           = \frac{0.9483 - 0.5}{0.5} = 0.897,
+\]
+\[
+  e(N{=}4) = \frac{\frac{1}{0.915} - \frac{1}{4}}{1 - \frac{1}{4}}
+           = \frac{1.0931 - 0.25}{0.75} = 1.124.
+\]
+
+\textbf{Tendencia:} $e$ \emph{crece} de $0.897$ (N=2) a $1.124$ (N=4) --- de hecho
+supera 1, un valor fuera del rango teórico $[0,1]$ de una fracción serial
+"pura". Según el criterio de interpretación de Karp y Flatt~\cite{karpflatt1990},
+un $e$ que crece con $N$ indica que la pérdida de escalabilidad \textbf{no} es un
+límite algorítmico fijo de T1 (en ese caso $e$ se mantendría aproximadamente
+constante), sino \textbf{sobrecarga creciente del motor de ejecución}. Que $e$
+supere 1 refuerza esta lectura: no es que T1 tenga una fracción serial
+intrínsecamente alta, es que el costo de coordinar más executors crece más rápido
+que el trabajo que se logra paralelizar.
+
+Atribuyo esta sobrecarga a tres mecanismos concretos de Spark, consistentes con la
+descripción arquitectónica del motor~\cite{zaharia2016spark}:
+\begin{enumerate}
+  \item \textbf{Planificación del DAG y lanzamiento de tareas.} Spark hereda del
+    paradigma de procesamiento por lotes popularizado por
+    MapReduce~\cite{deanghemawat2008} el principio de dividir el trabajo en
+    tareas independientes por partición; cada executor adicional implica más
+    tareas que el \textit{driver} debe planificar, serializar y enviar. Para
+    una transformación de una sola etapa como T1 (filtro simple, sin
+    \textit{shuffle}), este costo fijo por tarea pesa proporcionalmente más que
+    en transformaciones con más cómputo por partición.
+  \item \textbf{Arranque y coordinación de executors.} Cada sesión Spark nueva
+    (\texttt{crear\_spark(n)}) reinicia executors JVM independientes; con
+    $N{=}4$ hay más JVMs que sincronizar (\textit{heartbeats}, gestión de
+    memoria) que con $N{=}1$, y ese costo es esencialmente fijo, no decrece con
+    el volumen de datos por executor.
+  \item \textbf{Entorno compartido y con ruido (Google Colab).} A diferencia de
+    un clúster dedicado, Colab ejecuta sobre infraestructura multiinquilino con
+    variabilidad de CPU/E-S entre sesiones; a mayor número de procesos
+    concurrentes (más executors), mayor exposición a esa variabilidad, lo que
+    puede amplificar el efecto de los dos mecanismos anteriores en la mediana
+    observada.
+\end{enumerate}
+
+\section{Propuesta de integración al PFC}
+\label{sec:propuesta}
+
+\textbf{Caso de uso.} En el PFC ACC (Sistema de Gestión de Soporte Técnico ISP), el
+punto de inserción propuesto es un \textbf{proceso por lotes nocturno} que recorre
+todos los tickets creados/actualizados en el día y calcula, por zona y por
+categoría: cumplimiento de SLA, tiempo medio de respuesta y desempeño por agente
+--- operaciones análogas a T2 (agrupación) y T4 (columna derivada), que en este
+mismo experimento mostraron los mejores \textit{speedups} (1.875 y 1.735
+respectivamente, tabla~\ref{tab:base}), a diferencia de T1.
+
+\textbf{Arquitectura de integración.} El sistema ACC sigue una arquitectura en
+capas (presentación web, API de negocio, base de datos relacional). El job de
+Spark se inserta \emph{fuera} del camino síncrono de la API, como un proceso batch
+independiente:
+\begin{enumerate}
+  \item Un disparador programado (\textit{cron}, 02:00 AM) lanza el job.
+  \item El job lee los tickets del día directamente de la base de datos
+    (extracción de solo lectura, réplica o ventana de mantenimiento).
+  \item Ejecuta las agregaciones por zona/categoría/agente (equivalentes a
+    T2/T4) y escribe los resultados en una tabla de reportes agregados
+    (\texttt{reportes\_diarios}), no en las tablas transaccionales.
+  \item El panel de supervisión (capa de presentación) consulta esa tabla
+    agregada, no el job de Spark directamente.
+\end{enumerate}
+
+\textbf{Decisión que soporta.} La salida alimenta un panel de supervisores que
+decide, semana a semana, a qué zona o equipo reforzar con más agentes según el
+cumplimiento de SLA observado --- una decisión operativa concreta, no un reporte
+genérico.
+
+\textbf{Por qué no T1 en este punto.} Es deliberado que el proceso batch propuesto
+se parezca a T2/T4 y no a T1: el hallazgo de la sección~\ref{sec:diagnostico}
+indica que filtros ligeros de una sola pasada como T1 no se benefician de
+paralelizar con Spark en volúmenes de esta magnitud; ese tipo de operación es más
+apropiado ejecutarla de forma síncrona con \texttt{pandas} (o directamente como
+consulta SQL) dentro de la propia API, no como job distribuido.
+
+\section{Dimensionamiento y viabilidad}
+
+Modelando el tiempo secuencial como $T_{\text{sec}}(n) = \alpha n$ y el
+distribuido como $T_{\text{dist}}(n) = \beta + \gamma n / N$, el umbral de
+rentabilidad es
+\begin{equation}
+  n^* = \frac{\beta}{\alpha - \dfrac{\gamma}{N}}, \qquad
+  \text{válido si } \alpha > \frac{\gamma}{N}.
+  \label{eq:umbral}
+\end{equation}
+
+\textbf{Método de ajuste (con su limitación declarada).} No se dispone, para T1,
+de mediciones a distintos tamaños de dataset (el equipo solo escaló volumen para
+T2, en el modo \texttt{umbral} de \texttt{medicion.py}); para T1 solo se midió el
+dataset completo (600\,000 filas) en $N=1,2,4$. Ante esa limitación, estimo
+$\alpha$ directamente de la línea base pandas ($\alpha = 8.352/600\,000 =
+\num{1.392e-5}\,\si{\second}$ por registro) y ajusto $\beta,\gamma$ por regresión
+lineal de $T_{\text{dist}}$ sobre $1/N$ usando únicamente $N=1$ y $N=2$ ---
+excluyo deliberadamente $N=4$ del ajuste porque en ese punto domina el efecto de
+sobrecarga no lineal diagnosticado en la sección~\ref{sec:diagnostico}, que el
+modelo lineal no captura:
+\[
+  \gamma = \frac{5.285 - 5.012}{600\,000 - 300\,000} = \num{9.10e-7}\,\si{\second},
+  \qquad
+  \beta = 5.285 - 600\,000\,\gamma = \SI{4.739}{\second}.
+\]
+Con $N=4$: $\gamma/N = \num{2.28e-7}$, que cumple $\alpha > \gamma/N$, y
+\[
+  n^* = \frac{4.739}{\num{1.392e-5} - \num{2.28e-7}} \approx 346\,000 \text{ registros}.
+\]
+
+\textbf{Lectura crítica del propio resultado.} Este $n^*$ (\num{346000}) es
+\emph{menor} que el tamaño real del dataset (600\,000), es decir, el modelo
+lineal --- ajustado solo con el tramo "bien comportado" ($N{=}1\to2$) ---
+predeciría que Spark ya debería ser rentable a escala completa. Sin embargo, la
+medición real en $N=4$ contradice esa predicción ($S_{\text{interno}}<1$). Esta
+contradicción es en sí misma un resultado relevante: confirma que, para
+transformaciones ligeras como T1, un modelo de costo lineal en $n$ es
+insuficiente para decidir el umbral de rentabilidad; se necesita, además,
+monitoreo empírico del comportamiento del motor a distintos $N$, no solo a
+distintos $n$.
+
+\textbf{Modelo de servicio en la nube.} Dado que ACC es un sistema ISP con carga
+diaria predecible (job nocturno, no interactivo), recomiendo un clúster
+\textbf{efímero bajo demanda} (p.\ ej.\ Databricks Community/Job Clusters o EMR en
+modo \textit{transient}) que se aprovisiona solo para la ventana del job y se
+apaga al terminar, en vez de un clúster permanente: minimiza costo fijo cuando,
+como muestra este análisis, el beneficio marginal de más executors no está
+garantizado para todas las transformaciones del pipeline.
+
+\textbf{Riesgos.} (i) Variabilidad de rendimiento en infraestructura compartida,
+igual que la observada en Colab; (ii) sobre-aprovisionar executors para
+operaciones ligeras, replicando el problema de T1 en producción; (iii) ventana de
+mantenimiento nocturna insuficiente si el volumen de tickets crece más rápido de
+lo proyectado.
+
+\section{Postura crítica y alternativas}
+
+\textbf{¿Es Spark la opción correcta para el PFC?} Con matices: sí para el proceso
+batch propuesto en la sección~\ref{sec:propuesta} (agregaciones tipo T2/T4, con
+\textit{speedups} de 1.7--1.9$\times$ observados), pero \textbf{no} como motor
+universal para todo el pipeline de datos del sistema --- el propio T1 demuestra
+que, para operaciones ligeras, la sobrecarga de Spark puede ser contraproducente.
+
+\textbf{Alternativa 1: Dask.} Biblioteca de cómputo paralelo en Python puro. Se
+descarta como reemplazo general porque, aunque evita la sobrecarga JVM
+identificada en la sección~\ref{sec:diagnostico} (mecanismo 2) y sería
+razonable para T1, su ecosistema de conectores y su madurez en \textit{joins}
+distribuidos a gran escala es menor que el de Spark~\cite{zaharia2016spark}; un
+ISP en crecimiento necesita esa capacidad para las operaciones pesadas
+(T2/T3/T4), donde Spark ya demuestra ventaja.
+
+\textbf{Alternativa 2: escalar verticalmente pandas (sin motor distribuido).} Los
+propios datos de este informe muestran que pandas procesa las 600\,000 filas en
+6--12 segundos según la transformación --- perfectamente aceptable para un job
+nocturno hoy. Se descarta como estrategia de \emph{largo plazo} porque no escala
+horizontalmente: el volumen de tickets de un ISP crece con su base de clientes, y
+verticalizar hardware indefinidamente no tiene el mismo techo de costo/beneficio
+que un clúster elástico. Es, sin embargo, la opción correcta \emph{por debajo}
+del umbral $n^*$ estimado en la sección anterior --- lo cual es coherente con el
+propio resultado cuantitativo de este informe, no una preferencia arbitraria.
+
+\section{Conclusiones}
+
+\begin{enumerate}
+  \item Para T1, la sobrecarga de Spark supera su beneficio de paralelismo en
+    $N=4$ dentro del rango probado ($S_{\text{interno}}(4)=0.915<1$),
+    invalidando la suposición ingenua de que más executors siempre aceleran una
+    transformación (evidencia: tabla~\ref{tab:t1scale}, figura~\ref{fig:speedup}).
+  \item La tendencia creciente de Karp-Flatt ($e$ de 0.897 a 1.124 entre $N=2$ y
+    $N=4$) muestra que la no escalabilidad observada se debe a sobrecarga
+    \emph{creciente} del motor, no a un límite algorítmico fijo de T1 (evidencia:
+    Ecuación~\ref{eq:karpflatt} aplicada en la sección~\ref{sec:diagnostico}).
+  \item El procesamiento distribuido en el PFC debe reservarse para operaciones
+    agregadas y pesadas (tipo T2/T4, \textit{speedups} 1.7--1.9$\times$), no para
+    filtros ligeros por registro como T1; esto determinó directamente el punto de
+    inserción arquitectónico propuesto en la sección~\ref{sec:propuesta}
+    (evidencia: tabla~\ref{tab:base}, comparación de \textit{speedups} entre las
+    cinco transformaciones).
+\end{enumerate}
+
+\section{Declaración de uso de inteligencia artificial generativa}
+
+Se utilizó Claude (Anthropic) como asistente durante la elaboración de este
+informe, con los siguientes propósitos: (i) orientación paso a paso para
+reproducir el pipeline de PE-U4 en Google Colab y generar las mediciones propias
+de T1 en $N=1,2$; (ii) generación del código Python (matplotlib) para la figura
+propia de la sección~\ref{sec:diagnostico} a partir de los tiempos medidos por el
+autor; (iii) redacción asistida del borrador de las secciones 1 a 8, sobre la base
+de los datos, cálculos y decisiones de diseño aportados por el autor. Los cálculos
+numéricos, la interpretación de los resultados y las decisiones de arquitectura
+fueron revisados por el autor antes de la entrega.
+
+\printbibliography
+
+\end{document}
